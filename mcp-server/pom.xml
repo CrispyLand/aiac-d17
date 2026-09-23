@@ -21,10 +21,17 @@
 	<artifactId>mcp-server</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>mcp-server</name>
-	<description>A local MCP server exposing three stub tools over SSE.</description>
+	<description>A local MCP server exposing a read-only Google Calendar tool over SSE.</description>
 
 	<properties>
 		<java.version>21</java.version>
+		<!--
+		  Pinned as properties because two of these versions have to be stated explicitly to win
+		  at all — see the dependencies below.
+		-->
+		<google-api-client.version>2.9.1</google-api-client.version>
+		<google-oauth-client.version>1.39.0</google-oauth-client.version>
+		<google-calendar.version>v3-rev20260708-2.0.0</google-calendar.version>
 		<!--
 		  2.0.1 rather than 1.1.x. Spring AI 1.1.8's starters pin spring-boot-starter 3.5.15,
 		  a Boot generation below this parent; 2.0.1's pin 4.1.1 exactly. Both ship @McpTool,
@@ -50,6 +57,51 @@
 		<dependency>
 			<groupId>org.springframework.ai</groupId>
 			<artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+		</dependency>
+
+		<!--
+		  The generated Calendar v3 model and client. Its own POM hard-codes google-api-client
+		  2.7.2, which is why the next dependency is declared rather than inherited.
+		-->
+		<dependency>
+			<groupId>com.google.apis</groupId>
+			<artifactId>google-api-services-calendar</artifactId>
+			<version>${google-calendar.version}</version>
+		</dependency>
+
+		<!--
+		  Declared explicitly to override the 2.7.2 above. It also decides the JSON stack: this
+		  version depends on google-http-client-gson and NOT on google-http-client-jackson2, so
+		  nothing here drags Jackson 2 in beside Boot 4's Jackson 3 (tools.jackson.*). That is
+		  why the auth helper uses GsonFactory — not preference, but keeping the tree clean.
+		-->
+		<dependency>
+			<groupId>com.google.api-client</groupId>
+			<artifactId>google-api-client</artifactId>
+			<version>${google-api-client.version}</version>
+		</dependency>
+
+		<!--
+		  LocalServerReceiver: the throwaway HTTP listener that catches Google's redirect after
+		  consent. The artifact name is vestigial — it has carried no Jetty for years and is
+		  built on the JDK's own com.sun.net.httpserver, so it cannot disturb the embedded
+		  Tomcat this server runs on.
+		-->
+		<dependency>
+			<groupId>com.google.oauth-client</groupId>
+			<artifactId>google-oauth-client-jetty</artifactId>
+			<version>${google-oauth-client.version}</version>
+		</dependency>
+
+		<!--
+		  Also load-bearing. Maven's nearest-wins would resolve google-oauth-client to 1.36.0 by
+		  way of google-api-client, while the receiver above pulls google-oauth-client-java6
+		  1.39.0, which expects its sibling at the same version. Stating it keeps the pair in step.
+		-->
+		<dependency>
+			<groupId>com.google.oauth-client</groupId>
+			<artifactId>google-oauth-client</artifactId>
+			<version>${google-oauth-client.version}</version>
 		</dependency>
 
 		<dependency>

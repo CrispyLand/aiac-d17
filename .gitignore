@@ -42,3 +42,10 @@ build/
 .DS_Store
 ### Claude Code local settings — regenerated from approved commands, can capture secrets
 .claude/settings.local.json
+
+### OAuth ###
+credentials.json
+token.json
+
+### Google OAuth token cache — grants calendar access, never commit
+.google-tokens/

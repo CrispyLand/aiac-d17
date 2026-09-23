@@ -37,7 +37,7 @@ spring:
           connections:
             # The key is the connection's local name, and it is what the page shows before the
             # handshake, while the server has not yet said what it calls itself.
-            stub-tools:
+            calendar:
               url: http://localhost:8081
               sse-endpoint: /sse
 
@@ -96,7 +96,7 @@ agent:
 
   defaults:
     model: openai/gpt-oss-20b
-    system-prompt: "You are a concise, helpful assistant. Answer directly and avoid filler. Don't lie and don't create facts. Be honest"
+    system-prompt: "You are a concise, helpful assistant. Answer directly and avoid filler. Don't lie and don't create facts. Be honest and tell me you don't know if you have no answer."
     temperature: 1.0
     max-completion-tokens: 1024
     reasoning-effort: ""            # "" = omit (works on every model) | low | medium | high

@@ -4,24 +4,43 @@ server:
 
 spring:
   application:
-    name: mcp-stub-server
+    name: mcp-calendar-server
 
   ai:
     mcp:
       server:
         # Reported to the client during the MCP handshake and shown on the agent's page, so the
         # panel can say WHICH server answered rather than just that something did.
-        name: crispyland-stub-tools
-        version: 1.0.0
+        name: crispyland-calendar
+        version: 2.0.0
 
         # SSE rather than STREAMABLE or STATELESS. It is the transport the client is configured
         # for, and the pair has to agree: a STREAMABLE server exposes no /sse endpoint, so the
         # client's connection attempt fails at the transport before any MCP message is sent.
         protocol: SSE
 
-        # Blocking server to match the blocking client. Nothing here is slow enough to be worth
-        # a reactive stack, and a sync server keeps the stub bodies readable.
+        # Blocking server to match the blocking client. A calendar lookup is one short HTTPS
+        # round trip, nowhere near worth a reactive stack, and a sync server keeps the tool
+        # readable.
         type: SYNC
+
+google:
+  calendar:
+    # Both default to the repository root, one level above this server — where Google Cloud
+    # Console's download lands and where .gitignore already covers them. They are relative, so
+    # they only resolve as intended when the process starts in mcp-server/. The startup error
+    # prints the absolute path it actually looked at, because that is the only useful thing to
+    # say when a relative path misses. Set an absolute path here if your IDE runs elsewhere.
+    credentials-file: ../credentials.json
+    token-directory: ../.google-tokens
+
+    # -1 asks for any free loopback port for the consent redirect. A desktop OAuth client is
+    # allowed to redirect to any localhost port, so pinning one only risks a collision.
+    receiver-port: -1
+
+    # Which zone decides where the day starts and ends. Empty = the JVM's, which is right when
+    # this runs on the machine whose schedule is being read.
+    time-zone: ""
 
 logging:
   level:
