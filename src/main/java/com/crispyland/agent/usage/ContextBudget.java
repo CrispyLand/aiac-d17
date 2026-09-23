@@ -28,6 +28,10 @@ package com.crispyland.agent.usage;
  *   <li>{@code summaryTokens} — short-term, compressed: the stand-in for turns already folded away</li>
  *   <li>{@code historyTokens} — short-term, verbatim: the part that grows turn by turn</li>
  *   <li>{@code inputTokens} — the new message, plus the request's framing overhead</li>
+ *   <li>{@code toolTokens} — the MCP tool schemas offered on this call. The one line here that is
+ *       not in the message array at all: it rides in the request's {@code tools} field, and it is
+ *       the only line whose size is decided by somebody else's server. Measured at 149 tokens for
+ *       a two-tool server and 673 for a four-tool one, re-sent on every request of the turn</li>
  *   <li>{@code overheadTokens} — the provider's own chat template, learned by observation</li>
  * </ul>
  * Splitting the memory lines by layer rather than reporting one "context" figure is what makes
@@ -53,6 +57,7 @@ public record ContextBudget(
         long summaryTokens,
         long historyTokens,
         long inputTokens,
+        long toolTokens,
         long overheadTokens,
         long reservedCompletionTokens,
         int droppedMessages,
@@ -65,10 +70,26 @@ public record ContextBudget(
         return countedTokens() + overheadTokens;
     }
 
-    /** The messages alone, before the provider's template is added — what was actually encoded. */
+    /**
+     * Everything encoded locally, before the provider's template is added.
+     * <p>
+     * Tools are in here despite not being messages, because this figure has one job: to be the
+     * number {@code TemplateOverhead} subtracts from the provider's reported {@code prompt_tokens}
+     * to learn the template's own cost. Leave a segment out of it and that subtraction attributes
+     * the missing segment to the template, which then quietly inflates every later estimate —
+     * including the toolless ones.
+     */
     public long countedTokens() {
         return systemTokens + invariantTokens + profileTokens + longTermTokens + workingTokens
-                + taskTokens + summaryTokens + historyTokens + inputTokens;
+                + taskTokens + summaryTokens + historyTokens + inputTokens + toolTokens;
+    }
+
+    public boolean hasTools() {
+        return toolTokens > 0;
+    }
+
+    public int toolPercent() {
+        return percentOfWindow(toolTokens);
     }
 
     /**

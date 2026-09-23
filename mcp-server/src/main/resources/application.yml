@@ -1,0 +1,30 @@
+server:
+  # 8081, because the agent owns 8080. Two processes is the point of the exercise.
+  port: 8081
+
+spring:
+  application:
+    name: mcp-stub-server
+
+  ai:
+    mcp:
+      server:
+        # Reported to the client during the MCP handshake and shown on the agent's page, so the
+        # panel can say WHICH server answered rather than just that something did.
+        name: crispyland-stub-tools
+        version: 1.0.0
+
+        # SSE rather than STREAMABLE or STATELESS. It is the transport the client is configured
+        # for, and the pair has to agree: a STREAMABLE server exposes no /sse endpoint, so the
+        # client's connection attempt fails at the transport before any MCP message is sent.
+        protocol: SSE
+
+        # Blocking server to match the blocking client. Nothing here is slow enough to be worth
+        # a reactive stack, and a sync server keeps the stub bodies readable.
+        type: SYNC
+
+logging:
+  level:
+    # The handshake and tools/list exchange, so the terminal shows the client arriving.
+    io.modelcontextprotocol: INFO
+    org.springframework.ai.mcp: INFO

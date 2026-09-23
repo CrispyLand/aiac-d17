@@ -198,6 +198,45 @@
                margin: -8px 0 18px; font-size: 12px; color: var(--muted); }
         .stage { background: #eceef1; border: 1px solid var(--line); border-radius: 999px;
                  padding: 5px 12px; font-weight: 600; }
+
+        /* MCP. Teal rather than purple or green: nothing in this panel is remembered and nothing
+           in it is the task — it is another process, and it should not read as either. */
+        .card.mcp { border-left: 3px solid #0ca678; }
+        .mcphead { display: flex; align-items: center; justify-content: space-between;
+                   gap: 12px; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+        .mcphead b { color: #0b7285; font-size: 14px; }
+        /* The light. Red is the resting state, so a panel that has done nothing cannot look
+           connected — green is only ever written by a handshake that actually returned. */
+        .lamp { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+                background: #e03131; box-shadow: 0 0 0 3px #ffe3e3; margin-right: 7px;
+                vertical-align: middle; }
+        .lamp.on { background: #2f9e44; box-shadow: 0 0 0 3px #d3f9d8; }
+        .mcpserver { margin-top: 12px; }
+        /* A server that is switched off keeps its row — it is still configured, and hiding it
+           would leave no way back — but it recedes, because it contributed nothing this render. */
+        .mcpserver.muted .mcpwho b { color: var(--muted); }
+        .mcpwho { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+                  font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+        /* Unlike every other .pchip.on on this page, this one is not the current selection you
+           cannot re-pick — it is a switch, and its "on" state is exactly what you click to undo. */
+        .mcpwho .pchip { margin-left: auto; cursor: pointer; }
+        .mcpwho .pchip:disabled { opacity: .45; cursor: default; }
+        .mcpwho b { color: #0b7285; font-size: 12px; text-transform: uppercase;
+                    letter-spacing: .04em; }
+        /* Which side of the network a server is on. Grey for this laptop, teal for the internet,
+           so two servers in one list are told apart before either name is read. */
+        .where { border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px;
+                 font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+        .where.far { border-color: #63e6be; background: #e6fcf5; color: #0b7285; }
+        .mcptool { border-top: 1px solid var(--line); padding: 9px 0; }
+        .mcptool:last-child { padding-bottom: 0; }
+        .mcptool .tname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                          font-size: 12px; font-weight: 600; color: #0b7285; }
+        .mcptool .tdesc { font-size: 13px; margin-top: 3px; }
+        .mcparg { font-size: 12px; color: var(--muted); margin-top: 4px; padding-left: 14px; }
+        .mcparg code { color: var(--ink); font-weight: 600; }
+        .mcparg .req { color: #c92a2a; font-weight: 700; }
+        .mcparg .opt { opacity: .7; }
         .stage.on { background: #e7f5ff; border-color: #4dabf7; color: #1971c2; }
         .stage.was { opacity: .55; }
         .stage.held { background: #fff4e6; border-color: #ffc078; color: #e8590c; }
@@ -236,6 +275,9 @@
         .seg.task { background: #4dabf7; }
         .seg.hist { background: #3b5bdb; }
         .seg.input { background: #22b8cf; }
+        /* Teal, matching the MCP card's border: the one segment of this bar that another process
+           decided the size of. */
+        .seg.tool { background: #0b7285; }
         .seg.tmpl { background: #f76707; }
         .seg.reserved { background: repeating-linear-gradient(45deg,
                         #ced4da, #ced4da 4px, #e9ecef 4px, #e9ecef 8px); }
@@ -394,6 +436,88 @@
                     </td>
                 </tr>
             </table>
+        </div>
+    </div>
+
+    <!-- MCP. Not a memory layer and not part of the agent: other processes, asked at runtime what
+         they can do — one started from this repository, one a public server on the internet, and
+         the page cannot tell them apart except by the URL it prints. What is listed here is also
+         what the model is offered: a tool under a switch that is on can be chosen and run
+         mid-turn, and with the switches off a chat turn goes out exactly as it did before this
+         panel existed. Two levels of switch, because with more than one server "is MCP on" stopped
+         being the only question worth asking. -->
+    <div class="card mcp">
+        <div class="mcphead">
+            <span>
+                <span class="lamp" th:classappend="${mcp.allConnected} ? 'on' : ''"></span>
+                <b>MCP</b> ·
+                <span th:if="${!mcp.enabled}">off — no server is being contacted</span>
+                <span th:if="${mcp.enabled and mcp.allConnected}">connected ·
+                    <span th:text="${mcp.toolCount}">0</span> tool(s) from
+                    <span th:text="${mcp.enabledCount}">0</span> of
+                    <span th:text="${#lists.size(mcp.servers)}">0</span> server(s)</span>
+                <span th:if="${mcp.enabled and !mcp.allConnected}">disconnected</span>
+            </span>
+            <button type="submit" form="mcpToggleForm" class="pchip"
+                    th:classappend="${mcp.enabled} ? 'on' : ''"
+                    th:text="${mcp.enabled} ? 'Turn off' : 'Turn on'"
+                    title="The master switch. Off means the model is not told any tool exists, so a chat turn goes out exactly as it did before this panel.">Turn off</button>
+        </div>
+
+        <div class="empty" th:if="${mcp.enabled and mcp.servers.isEmpty()}">
+            No MCP servers are configured. Add one under
+            <code>spring.ai.mcp.client.sse.connections</code> or
+            <code>spring.ai.mcp.client.streamable-http.connections</code>.
+        </div>
+
+        <!-- One block per configured server, and the block is the grouping: a tool's origin is
+             not a property of the tool, it is which server answered. The connection key leads,
+             because that is the name in application.yml and so the only one that is the same
+             before and after a handshake. -->
+        <div class="mcpserver" th:each="s : ${mcp.servers}" th:classappend="${s.enabled} ? '' : 'muted'">
+            <span class="mcpwho">
+                <span class="lamp" th:classappend="${s.connected} ? 'on' : ''"
+                      th:style="${s.enabled} ? '' : 'background:#adb5bd;box-shadow:0 0 0 3px #f1f3f5'"></span>
+                <b th:text="${s.label}">stub-tools</b>
+                <!-- local/remote, stated rather than left to be inferred from the URL. The claim
+                     the panel is making is that one client merged a process on this laptop with a
+                     public server on the internet, and this is where that is checkable. -->
+                <span class="where" th:classappend="${s.remote} ? 'far' : ''"
+                      th:text="${s.remote} ? 'remote' : 'local'">local</span>
+                <span th:if="${!s.alsoCalled.isEmpty()}" th:text="${s.alsoCalled}">crispyland-stub-tools</span>
+                <span th:if="${!s.version.isEmpty()}" th:text="'v' + ${s.version}">v1.0.0</span>
+                <span th:text="${s.url}">http://localhost:8081/sse</span>
+                <span th:if="${s.connected}"
+                      th:text="'· ' + ${#lists.size(s.tools)} + ' tool(s)'">· 2 tool(s)</span>
+                <span th:unless="${s.enabled}">· withheld — not contacted this render</span>
+
+                <!-- One switch per server, because with more than one server "is MCP on" stopped
+                     being the only question worth asking. Turning this off is the cheapest way to
+                     show whose tool the model actually reached for: leave the answer on screen,
+                     switch that server off, ask again. Disabled under the master switch rather
+                     than hidden, so it is clear these are two levels and not two copies. -->
+                <button type="submit" form="mcpServerToggleForm" name="label" th:value="${s.label}"
+                        class="pchip" th:classappend="${s.enabled} ? 'on' : ''"
+                        th:disabled="${!mcp.enabled}"
+                        th:title="${s.enabled} ? 'Withhold these tools from the model. The session stays open — nothing is disconnected.' : 'Offer these tools to the model again.'"
+                        th:text="${s.enabled} ? 'on' : 'off'">on</button>
+            </span>
+
+            <!-- The failure is shown where the tools would have been, with the reason the client
+                 actually got. A panel that just goes quiet sends you to the logs. -->
+            <div class="note over" th:if="${s.enabled and !s.connected}" th:text="${s.error}">Connection refused</div>
+
+            <div class="mcptool" th:each="t : ${s.tools}">
+                <span class="tname" th:text="${t.name}">getWeather</span>
+                <div class="tdesc" th:text="${t.description}">Get the current weather for a city.</div>
+                <div class="mcparg" th:each="p : ${t.params}">
+                    <code th:text="${p.name}">city</code>
+                    <span th:text="${p.type}">string</span>
+                    <span th:if="${p.required}" class="req">required</span>
+                    <span th:unless="${p.required}" class="opt">optional</span>
+                    — <span th:text="${p.description}">City name</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -686,6 +810,7 @@
                 <span class="seg task" th:style="'width:' + ${budget.taskPercent} + '%'"></span>
                 <span class="seg hist" th:style="'width:' + ${budget.historyPercent} + '%'"></span>
                 <span class="seg input" th:style="'width:' + ${budget.inputPercent} + '%'"></span>
+                <span class="seg tool" th:style="'width:' + ${budget.toolPercent} + '%'"></span>
                 <span class="seg tmpl" th:style="'width:' + ${budget.overheadPercent} + '%'"></span>
                 <span class="seg reserved" th:style="'width:' + ${budget.reservedPercent} + '%'"></span>
                 <span class="seg free"></span>
@@ -710,6 +835,12 @@
                       <b th:text="${#numbers.formatInteger(budget.historyTokens, 1, 'COMMA')}">0</b></span>
                 <span th:if="${budget.inputTokens > 0}"><i style="background:#22b8cf"></i>new message
                       <b th:text="${#numbers.formatInteger(budget.inputTokens, 1, 'COMMA')}">0</b></span>
+                <!-- Titled rather than left bare, because this is the one line somebody else's
+                     server sets the size of, and the switches that change it are two cards up. -->
+                <span th:if="${budget.hasTools}"
+                      title="MCP tool schemas attached to this call. Re-sent with every request in the turn, including each follow-up after a tool runs. Switch a server off in the MCP panel to stop paying for its tools.">
+                      <i style="background:#0b7285"></i>tool schemas
+                      <b th:text="${#numbers.formatInteger(budget.toolTokens, 1, 'COMMA')}">0</b></span>
                 <span><i style="background:#f76707"></i>chat template
                       <b th:text="${#numbers.formatInteger(budget.overheadTokens, 1, 'COMMA')}">0</b></span>
                 <span><i style="background:#ced4da"></i>reserved for reply
@@ -771,6 +902,8 @@
     <!-- Sibling forms: HTML forbids nesting, so buttons inside the main form target these by id.
          The submitting button carries the interesting value (which branch, which message), which
          is why one form each is enough for all of them. -->
+    <form id="mcpToggleForm" method="post" action="/mcp/toggle"></form>
+    <form id="mcpServerToggleForm" method="post" action="/mcp/server/toggle"></form>
     <form id="resetForm" method="post" action="/reset"></form>
     <form id="profileForm" method="post" action="/profile/switch"></form>
     <form id="switchForm" method="post" action="/branch/switch"></form>

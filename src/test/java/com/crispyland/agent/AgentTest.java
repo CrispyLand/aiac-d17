@@ -55,7 +55,7 @@ class AgentTest {
     private static final MemoryScope C1 = MemoryScope.of("c1");
 
     /** A profile that sets both limits, so "declared beats default" is visible on the wire. */
-    private static final UserProfile RUSSELL = new UserProfile("russell", "Russell", "Russian",
+    private static final UserProfile RUSSELL = new UserProfile("russell", "Russell", "English",
             "formal", new UserProfile.Format("short bullet points", 120), List.of("use emoji"),
             new Limits(400, 0.2, null), null);
 

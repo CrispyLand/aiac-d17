@@ -1,6 +1,7 @@
 package com.crispyland.agent;
 
 import com.crispyland.agent.invariant.Invariants;
+import com.crispyland.agent.llm.ToolSpec;
 import com.crispyland.agent.memory.Facts;
 import com.crispyland.agent.memory.LongTermMemory;
 import com.crispyland.agent.memory.MemoryState;
@@ -92,11 +93,24 @@ public class ContextPlanner {
      *         {@link OverflowPolicy#TRIM} when even an empty history does not fit
      */
     public ContextPlan plan(AgentConfig config, Persona persona, MemoryState memory, String input) {
-        return plan(config, persona, Invariants.EMPTY, memory, input);
+        return plan(config, persona, Invariants.EMPTY, memory, input, List.of());
     }
 
     public ContextPlan plan(AgentConfig config, Persona persona, Invariants invariants,
                             MemoryState memory, String input) {
+        return plan(config, persona, invariants, memory, input, List.of());
+    }
+
+    /**
+     * @param tools the schemas about to be attached to the request, priced like any other segment.
+     *              They are not messages and they are not memory, but they are prompt: the provider
+     *              renders them into the same window and bills them at the same rate, and they are
+     *              the only part of the request whose size is chosen by another process. Counting
+     *              them as zero was how a four-tool server could put 673 tokens into a prompt that
+     *              the overflow check had already decided was 93
+     */
+    public ContextPlan plan(AgentConfig config, Persona persona, Invariants invariants,
+                            MemoryState memory, String input, List<ToolSpec> tools) {
         MemoryState state = (memory == null) ? MemoryState.EMPTY : memory;
 
         // The system prompt is re-applied fresh each turn rather than stored, so editing it
@@ -120,6 +134,7 @@ public class ContextPlanner {
         // The once-per-request reply priming rides along with the new message so that the
         // segments add up exactly to the estimated prompt.
         long inputTokens = counter.count(userMessage) + BpeTokenCounter.TOKENS_PER_REPLY;
+        long toolTokens = counter.count(ToolSpec.renderAll(tools));
         long reserved = reserved(config);
         long window = windowFor(config.model());
         long templateTokens = overhead.forModel(config.model());
@@ -137,9 +152,15 @@ public class ContextPlanner {
             // Invariants are inside the fixed part, so trimming eats history rather than rules.
             // A trim that dropped a constraint to make room would remove the one thing in the
             // prompt whose absence cannot be noticed from the answer.
+            //
+            // Tools are fixed here too, and for a blunter reason: this method cannot drop one. The
+            // set is decided by which servers are switched on, and half a tool list is not a
+            // cheaper request, it is a model that cannot answer and does not know why. So they
+            // count against the room available for history, and if they alone will not fit, the
+            // trim fails and says so rather than silently sending a call that cannot work.
             long fixed = systemTokens + invariantTokens + profileTokens + longTermTokens
-                    + workingTokens + summaryTokens + taskTokens + inputTokens + templateTokens
-                    + reserved;
+                    + workingTokens + summaryTokens + taskTokens + inputTokens + toolTokens
+                    + templateTokens + reserved;
             while (dropped < replayed.size() && fixed + historyTokens > window) {
                 historyTokens -= perMessage[dropped];
                 dropped++;
@@ -155,7 +176,7 @@ public class ContextPlanner {
 
         ContextBudget budget = new ContextBudget(config.model(), window, systemTokens,
                 invariantTokens, profileTokens, longTermTokens, workingTokens, taskTokens, summaryTokens,
-                historyTokens, inputTokens, templateTokens, reserved, dropped,
+                historyTokens, inputTokens, toolTokens, templateTokens, reserved, dropped,
                 state.summary().replacedTokens(), overhead.calibrated(config.model()), warnAt);
 
         // OFF deliberately sends anyway, so the provider's own rejection can be observed.
@@ -195,11 +216,16 @@ public class ContextPlanner {
      * so the window filling up is visible turn by turn rather than only at the moment it breaks.
      */
     public ContextBudget budget(AgentConfig config, Persona persona, MemoryState memory) {
-        return budget(config, persona, Invariants.EMPTY, memory);
+        return budget(config, persona, Invariants.EMPTY, memory, List.of());
     }
 
     public ContextBudget budget(AgentConfig config, Persona persona, Invariants invariants,
                                 MemoryState memory) {
+        return budget(config, persona, invariants, memory, List.of());
+    }
+
+    public ContextBudget budget(AgentConfig config, Persona persona, Invariants invariants,
+                                MemoryState memory, List<ToolSpec> tools) {
         MemoryState state = (memory == null) ? MemoryState.EMPTY : memory;
 
         long systemTokens = hasSystemPrompt(config)
@@ -216,6 +242,7 @@ public class ContextPlanner {
                 counter.count(workingMessage(state.working())),
                 counter.count(taskMessage(state.task())),
                 counter.count(recallMessage(state.summary())), historyTokens, 0L,
+                counter.count(ToolSpec.renderAll(tools)),
                 overhead.forModel(config.model()), reserved(config), 0,
                 state.summary().replacedTokens(),
                 overhead.calibrated(config.model()), warnAt);

@@ -3,6 +3,8 @@ package com.crispyland.agent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.crispyland.agent.invariant.Invariants;
+import com.crispyland.agent.llm.ToolSpec;
 import com.crispyland.agent.memory.Facts;
 import com.crispyland.agent.profile.Limits;
 import com.crispyland.agent.profile.Persona;
@@ -163,6 +165,85 @@ class ContextPlannerTest {
         // Nothing left to drop: system prompt + new message + reserved reply already overflow.
         assertThatThrownBy(() -> planner(100, OverflowPolicy.TRIM).plan(CONFIG, Persona.NONE, MemoryState.of(history(10)), "hello"))
                 .isInstanceOf(ContextOverflowException.class);
+    }
+
+    @Test
+    void offeredToolsArePricedAsPartOfThePromptTheyAreSentIn() {
+        ContextPlanner planner = planner(10_000, OverflowPolicy.FAIL);
+        ContextBudget without = planner
+                .plan(CONFIG, Persona.NONE, MemoryState.of(history(2)), "hello").budget();
+        ContextBudget with = planner.plan(CONFIG, Persona.NONE, Invariants.EMPTY,
+                MemoryState.of(history(2)), "hello", tools()).budget();
+
+        assertThat(without.toolTokens()).isZero();
+        assertThat(without.hasTools()).isFalse();
+        assertThat(with.toolTokens()).isPositive();
+        // The schemas are the only difference, so they are the whole difference.
+        assertThat(with.promptTokens() - without.promptTokens()).isEqualTo(with.toolTokens());
+    }
+
+    @Test
+    void toolsAreInsideTheCountedTotalSoTheLearnedTemplateCostIsNotInflatedByThem() {
+        // countedTokens() is what TemplateOverhead subtracts from the provider's reported
+        // prompt_tokens. A segment left out of it would be attributed to the chat template and
+        // would then quietly inflate every later estimate, including the toolless ones.
+        ContextBudget budget = planner(10_000, OverflowPolicy.FAIL)
+                .plan(CONFIG, Persona.NONE, Invariants.EMPTY, MemoryState.EMPTY, "hello", tools())
+                .budget();
+
+        assertThat(budget.countedTokens()).isEqualTo(budget.systemTokens() + budget.inputTokens()
+                + budget.toolTokens());
+    }
+
+    @Test
+    void aToolListLargeEnoughToOverflowTheWindowIsRefusedBeforeTheCallIsPaidFor() {
+        // The defect this closes: priced at zero, these schemas sailed through the check and the
+        // provider rejected the call — which is billed.
+        assertThatThrownBy(() -> planner(200, OverflowPolicy.FAIL).plan(CONFIG, Persona.NONE,
+                Invariants.EMPTY, MemoryState.EMPTY, "hello", tools()))
+                .isInstanceOf(ContextOverflowException.class);
+    }
+
+    @Test
+    void trimSpendsHistoryToMakeRoomForToolsBecauseHalfAToolListIsNotACheaperRequest() {
+        MemoryState memory = MemoryState.of(history(10));
+        // A window with room for the schemas and half the history. Derived rather than guessed:
+        // a literal would silently stop testing anything the day the system prompt, the tool
+        // schemas or the tokenizer changed underneath it.
+        ContextBudget roomy = planner(10_000, OverflowPolicy.TRIM).plan(CONFIG, Persona.NONE,
+                Invariants.EMPTY, memory, "hello", tools()).budget();
+        int window = (int) (roomy.projectedTokens() - roomy.historyTokens() / 2);
+        ContextPlanner planner = planner(window, OverflowPolicy.TRIM);
+
+        ContextPlanner.ContextPlan without =
+                planner.plan(CONFIG, Persona.NONE, memory, "hello");
+        ContextPlanner.ContextPlan with = planner.plan(CONFIG, Persona.NONE, Invariants.EMPTY,
+                memory, "hello", tools());
+
+        assertThat(without.budget().trimmed()).isFalse();
+        // Tools cannot be half-offered, so history is what pays for them.
+        assertThat(with.budget().droppedMessages())
+                .isGreaterThan(without.budget().droppedMessages());
+        assertThat(with.budget().toolTokens()).isPositive();
+        assertThat(with.budget().overflowing()).isFalse();
+    }
+
+    /** Two tools shaped the way a server actually sends them — nested schema, mixed types. */
+    private static List<ToolSpec> tools() {
+        return List.of(
+                new ToolSpec("getWeather", "Get the current weather for a city.",
+                        Map.of("type", "object",
+                                "properties", Map.of("city", Map.of("type", "string",
+                                        "description", "City name, optionally with a country.")),
+                                "required", List.of("city"))),
+                new ToolSpec("convert", "Convert an amount from one currency to another.",
+                        Map.of("type", "object",
+                                "properties", Map.of(
+                                        "amount", Map.of("type", "number",
+                                                "description", "Amount in the source currency."),
+                                        "from", Map.of("type", "string",
+                                                "description", "ISO 4217 source currency.")),
+                                "required", List.of("amount", "from"))));
     }
 
     @Test

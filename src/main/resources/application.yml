@@ -4,6 +4,55 @@ spring:
   thymeleaf:
     cache: false
 
+  ai:
+    mcp:
+      client:
+        enabled: true
+        name: agent-chat
+        version: 0.0.1
+        request-timeout: 10s
+        type: SYNC
+
+        # The one setting that keeps this app independent of the other one. Left at its default
+        # of `true`, the autoconfiguration calls initialize() while BUILDING the bean, so a
+        # stopped MCP server would stop THIS app from booting — the agent unreachable because a
+        # side panel's dependency was down. False means the transport is built but nobody has
+        # dialled it yet, which is also what gives the indicator something true to report: red
+        # is then a real un-dialled state rather than a guess.
+        initialized: false
+
+        # Still false, and this is not the same thing as the tools being unused. That flag wires
+        # MCP into Spring AI's own ChatClient, which this application does not use — it posts to
+        # Groq itself. The discovered tools reach the model through McpToolBox instead, so turning
+        # this on would only register callbacks nothing reads.
+        toolcallback:
+          enabled: false
+
+        # Two connections over two different transports, and the page merges what they report.
+        # That is the point of having a second one at all: MCP is worth little if a client can
+        # only talk to the server it was written against, so one of these is a process on this
+        # laptop and the other is a stranger's server on the public internet, discovered the
+        # same way and rendered by the same loop.
+        sse:
+          connections:
+            # The key is the connection's local name, and it is what the page shows before the
+            # handshake, while the server has not yet said what it calls itself.
+            stub-tools:
+              url: http://localhost:8081
+              sse-endpoint: /sse
+
+        # A separate block, not another entry above, because the transport is genuinely different:
+        # SSE opens a long-lived stream and gets a session back, streamable HTTP posts JSON-RPC to
+        # one endpoint. Spring autoconfigures each independently and both arrive as McpSyncClient
+        # beans in the same list, which is why McpCatalogue needs no branch for this.
+        streamable-http:
+          connections:
+            frankfurter:
+              # Frankfurter serves MCP at the root, so the endpoint has to be given explicitly —
+              # the default here is /mcp, and leaving it would 404 against this host.
+              url: https://mcp.frankfurter.dev
+              endpoint: /
+
 server:
   port: 8080
 
@@ -12,6 +61,17 @@ server:
 # the `defaults` per request; whatever it leaves empty falls back to these.
 # ---------------------------------------------------------------------------
 agent:
+  # Whether the agent talks to MCP servers at all, as the page's switch finds it on a cold
+  # start. The switch moves this at runtime; this is only the position it starts in.
+  mcp:
+    enabled: true
+
+    # How many times one turn may stop, run what the model asked for, and ask again. Three is
+    # enough for the realistic chains (list the currencies, then convert) and low enough that a
+    # model which has decided to call a tool forever costs four requests rather than a bill.
+    # Hitting the ceiling is logged as a WARN, not silently answered around.
+    max-tool-rounds: 3
+
   api-key: ${GROQ_API_KEY:}                                   # never hardcode the key
   endpoint: https://api.groq.com/openai/v1/chat/completions
   connect-timeout: 10s
@@ -36,7 +96,7 @@ agent:
 
   defaults:
     model: openai/gpt-oss-20b
-    system-prompt: "You are a concise, helpful assistant. Answer directly and avoid filler."
+    system-prompt: "You are a concise, helpful assistant. Answer directly and avoid filler. Don't lie and don't create facts. Be honest"
     temperature: 1.0
     max-completion-tokens: 1024
     reasoning-effort: ""            # "" = omit (works on every model) | low | medium | high

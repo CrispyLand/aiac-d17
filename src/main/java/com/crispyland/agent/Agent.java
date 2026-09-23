@@ -9,6 +9,11 @@ import com.crispyland.agent.judge.Verdict;
 import com.crispyland.agent.llm.ChatRequest;
 import com.crispyland.agent.llm.ChatResponse;
 import com.crispyland.agent.llm.LlmClient;
+import com.crispyland.agent.llm.ToolBox;
+import com.crispyland.agent.llm.ToolCall;
+import com.crispyland.agent.llm.ToolResult;
+import com.crispyland.agent.llm.ToolRound;
+import com.crispyland.agent.llm.ToolSpec;
 import com.crispyland.agent.memory.ConversationStore;
 import com.crispyland.agent.memory.Facts;
 import com.crispyland.agent.memory.HistoryCompressor;
@@ -35,11 +40,14 @@ import com.crispyland.agent.usage.ContextBudget;
 import com.crispyland.agent.usage.TemplateOverhead;
 import com.crispyland.agent.usage.TokenUsage;
 import com.crispyland.agent.usage.TokenUsageTracker;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
@@ -71,6 +79,8 @@ public class Agent {
     private final HistoryCompressor compressor;
     private final MemoryExtractor extractor;
     private final TemplateOverhead templateOverhead;
+    private final ToolBox toolBox;
+    private final int maxToolRounds;
     private final AgentConfig defaults;
     private final int maxFacts;
 
@@ -81,6 +91,7 @@ public class Agent {
      */
     private final MemoryRouter router = new MemoryRouter();
 
+    /** An agent that can only talk. Every test builds this one; nothing in production does. */
     public Agent(LlmClient llmClient,
                  InputPolicy inputPolicy,
                  OutputPolicy outputPolicy,
@@ -95,6 +106,30 @@ public class Agent {
                  MemoryExtractor extractor,
                  TemplateOverhead templateOverhead,
                  AgentProperties properties) {
+        this(llmClient, inputPolicy, outputPolicy, judge, usageTracker, conversations, longTerm,
+                invariants, guard, contextPlanner, compressor, extractor, templateOverhead,
+                properties, ToolBox.NONE, 0);
+    }
+
+    @Autowired
+    public Agent(LlmClient llmClient,
+                 InputPolicy inputPolicy,
+                 OutputPolicy outputPolicy,
+                 Judge judge,
+                 TokenUsageTracker usageTracker,
+                 ConversationStore conversations,
+                 LongTermStore longTerm,
+                 InvariantStore invariants,
+                 InvariantGuard guard,
+                 ContextPlanner contextPlanner,
+                 HistoryCompressor compressor,
+                 MemoryExtractor extractor,
+                 TemplateOverhead templateOverhead,
+                 AgentProperties properties,
+                 ToolBox toolBox,
+                 @Value("${agent.mcp.max-tool-rounds:3}") int maxToolRounds) {
+        this.toolBox = toolBox;
+        this.maxToolRounds = maxToolRounds;
         this.llmClient = llmClient;
         this.inputPolicy = inputPolicy;
         this.outputPolicy = outputPolicy;
@@ -208,33 +243,84 @@ public class Agent {
                 conversations.history(id));
         List<Message> history = memory.recent();
 
+        // Asked now rather than at startup, because the answer changes: the switch moves, servers
+        // come and go. Empty is the overwhelmingly common case and costs nothing — no `tools` key
+        // is written, so the request is identical to the one this app sent before tools existed.
+        //
+        // Asked *before* the planner, which is the whole point of this ordering: the tools are part
+        // of the prompt the window has to hold, so a budget drawn up without them is a budget for a
+        // request that is not the one about to be sent.
+        List<ToolSpec> offered = toolBox.available();
+
         // Priced before a byte leaves the process: an oversized prompt is billed as a
         // rejection, so the cheapest place to find out it will not fit is here.
-        ContextPlanner.ContextPlan plan = contextPlanner.plan(effective, who, rules, memory, prompt);
+        ContextPlanner.ContextPlan plan =
+                contextPlanner.plan(effective, who, rules, memory, prompt, offered);
         ContextBudget budget = plan.budget();
         if (budget.trimmed()) {
             log.info("Context trim: dropped {} oldest message(s) to fit {} of {} tokens",
                     budget.droppedMessages(), budget.projectedTokens(), budget.contextWindow());
         }
 
-        ChatRequest request = buildRequest(plan.messages(), effective);
+        ChatRequest request = buildRequest(plan.messages(), effective).withTools(offered);
 
         long startedAt = System.nanoTime();
         ChatResponse response = llmClient.complete(request);
+        usageTracker.record(response.usage());
+
+        // The turn, not the call. A tool round trip is still one question from the user and one
+        // answer to it, so what the page reports as this turn's cost is every call it took —
+        // while the tracker keeps counting calls, because that is what the provider bills.
+        TokenUsage turnUsage = response.usage();
+        List<ToolRound> rounds = new ArrayList<>();
+        while (response.wantsTools() && rounds.size() < maxToolRounds) {
+            List<ToolResult> results = new ArrayList<>();
+            for (ToolCall call : response.toolCalls()) {
+                results.add(toolBox.call(call));
+            }
+            rounds.add(new ToolRound(response.toolCalls(), results));
+
+            // The same request, knowing more. Everything the planner decided still holds; the only
+            // difference is that the model can now see what it asked to be looked up.
+            response = llmClient.complete(request.withRounds(rounds));
+            turnUsage = turnUsage.plus(response.usage());
+            usageTracker.record(response.usage());
+        }
         long latencyMillis = (System.nanoTime() - startedAt) / 1_000_000L;
 
-        TokenUsage usage = response.usage();
-        TokenUsage cumulative = usageTracker.record(usage);
+        if (response.wantsTools()) {
+            // Out of rounds with the model still asking. Answering with whatever text came back is
+            // wrong — there may be none — so this is a dead end worth naming rather than a silent
+            // truncation of the model's plan.
+            log.warn("The model was still asking for tools after {} round(s); stopping there.",
+                    maxToolRounds);
+        }
+        if (!rounds.isEmpty()) {
+            log.info("Turn used {} tool round(s): {}", rounds.size(), describe(rounds));
+        }
+
+        TokenUsage cumulative = usageTracker.cumulative();
 
         // The response is the only place the truth is ever stated. Feeding it back is what
-        // keeps the next turn's pre-flight estimate honest.
-        templateOverhead.observe(effective.model(), budget.countedTokens(), usage.promptTokens());
+        // keeps the next turn's pre-flight estimate honest — but only on a turn that is shaped
+        // like the ones the estimate is for. The planner does now price the tool schemas, so
+        // these turns are no longer unmodelled — they are mis-modelled in a known direction.
+        // Counting the schemas as the JSON we render over-states them by roughly a quarter,
+        // because the provider re-renders them into a cheaper form, so on a tool turn the
+        // counted total lands *above* the reported prompt_tokens. Observing that would hand
+        // TemplateOverhead a negative delta, which it clamps to zero — quietly erasing a real
+        // sixty-token template cost that every toolless turn still pays. The gate stays until
+        // the tool estimate is accurate enough to learn from.
+        if (offered.isEmpty()) {
+            templateOverhead.observe(effective.model(), budget.countedTokens(),
+                    turnUsage.promptTokens());
+        }
 
         log.info("Turn: prompt est {} / actual {} ({} history msgs, summary {} tok replacing {}), "
                         + "completion {}, window {}% used",
-                budget.promptTokens(), usage.promptTokens(), history.size(),
+                budget.promptTokens(), turnUsage.promptTokens(), history.size(),
                 budget.summaryTokens(), budget.replacedTokens(),
-                usage.completionTokens(), budget.usedPercent());
+                turnUsage.completionTokens(), budget.usedPercent());
 
         String answer = outputPolicy.apply(response.content());
         Verdict verdict = judge.judge(prompt, answer, effective);
@@ -243,12 +329,13 @@ public class Agent {
         // never poisons the history. Each message keeps the share of the turn it earned.
         conversations.append(id, List.of(
                 Message.user(prompt).withStats(
-                        MessageStats.forPrompt(usage.promptTokens(), effective.model())),
+                        MessageStats.forPrompt(turnUsage.promptTokens(), effective.model())),
                 Message.assistant(answer).withStats(
-                        MessageStats.forCompletion(usage.completionTokens(), usage.totalTokens(),
-                                latencyMillis, effective.model(), response.finishReason()))));
+                        MessageStats.forCompletion(turnUsage.completionTokens(),
+                                turnUsage.totalTokens(), latencyMillis, effective.model(),
+                                response.finishReason()))));
 
-        return new AgentResult(answer, effective, usage, cumulative, budget,
+        return new AgentResult(answer, effective, turnUsage, cumulative, budget,
                 response.finishReason(), latencyMillis, verdict, conversations.history(id),
                 compacted, InvariantGuard.Ruling.CLEAR, read.refusedMove());
     }
@@ -321,8 +408,12 @@ public class Agent {
     public ContextBudget budget(MemoryScope scope, Persona persona, AgentConfig config) {
         Persona who = (persona == null) ? Persona.NONE : persona;
         MemoryScope where = (scope == null) ? MemoryScope.of(null) : scope;
+        // The tools are asked for here too, even though nothing is being sent. This view exists to
+        // say what the next call will cost, and leaving them out would make the bar jump several
+        // hundred tokens the instant Send was pressed — the estimate would be wrong in exactly the
+        // moments somebody is looking at it to decide whether to trim the conversation.
         return contextPlanner.budget(effectiveConfig(who, config), who,
-                invariants.held(where.visitor()), memory(where));
+                invariants.held(where.visitor()), memory(where), toolBox.available());
     }
 
     /** The standing rules for a visitor, for rendering the page. */
@@ -688,6 +779,17 @@ public class Agent {
     /** Starts a new dialogue, discarding the message stack. */
     public void reset(String conversationId) {
         conversations.clear(conversationId);
+    }
+
+    /** What ran, for the one log line that says a turn was not answered from the model alone. */
+    private static String describe(List<ToolRound> rounds) {
+        List<String> names = new ArrayList<>();
+        for (ToolRound round : rounds) {
+            for (ToolResult result : round.results()) {
+                names.add(result.failed() ? result.name() + " (failed)" : result.name());
+            }
+        }
+        return String.join(", ", names);
     }
 
     private ChatRequest buildRequest(List<Message> messages, AgentConfig config) {

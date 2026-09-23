@@ -28,8 +28,9 @@ public class ContextOverflowException extends AgentException {
         return ("Context window exceeded for %s: %,d prompt + %,d reserved for the reply = %,d, "
                 + "but the window holds %,d (over by %,d). "
                 + "The prompt breaks down as %,d system + %,d long-term + %,d working "
-                + "+ %,d summary + %,d history + %,d new message + %,d chat template — "
-                + "start a new chat, shorten the system prompt, or lower max completion tokens.")
+                + "+ %,d summary + %,d history + %,d new message + %,d tool schemas "
+                + "+ %,d chat template — "
+                + "start a new chat, shorten the system prompt, or lower max completion tokens%s.")
                 .formatted(budget.model(),
                         budget.promptTokens(),
                         budget.reservedCompletionTokens(),
@@ -42,6 +43,8 @@ public class ContextOverflowException extends AgentException {
                         budget.summaryTokens(),
                         budget.historyTokens(),
                         budget.inputTokens(),
-                        budget.overheadTokens());
+                        budget.toolTokens(),
+                        budget.overheadTokens(),
+                        budget.hasTools() ? ", or switch off an MCP server" : "");
     }
 }
