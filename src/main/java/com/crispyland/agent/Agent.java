@@ -332,8 +332,9 @@ public class Agent {
                         MessageStats.forPrompt(turnUsage.promptTokens(), effective.model())),
                 Message.assistant(answer).withStats(
                         MessageStats.forCompletion(turnUsage.completionTokens(),
-                                turnUsage.totalTokens(), latencyMillis, effective.model(),
-                                response.finishReason()))));
+                                        turnUsage.totalTokens(), latencyMillis, effective.model(),
+                                        response.finishReason())
+                                .withToolsUsed(toolNames(rounds)))));
 
         return new AgentResult(answer, effective, turnUsage, cumulative, budget,
                 response.finishReason(), latencyMillis, verdict, conversations.history(id),
@@ -781,15 +782,26 @@ public class Agent {
         conversations.clear(conversationId);
     }
 
-    /** What ran, for the one log line that says a turn was not answered from the model alone. */
-    private static String describe(List<ToolRound> rounds) {
+    /**
+     * What ran, in the order it ran, a name repeated if it ran twice.
+     * <p>
+     * A failed tool is named as one rather than dropped. It still cost a round trip and the model
+     * still answered around it, so an answer that looks unsourced because the lookup broke should
+     * say so — that is the case where the reader most needs to know.
+     */
+    private static List<String> toolNames(List<ToolRound> rounds) {
         List<String> names = new ArrayList<>();
         for (ToolRound round : rounds) {
             for (ToolResult result : round.results()) {
                 names.add(result.failed() ? result.name() + " (failed)" : result.name());
             }
         }
-        return String.join(", ", names);
+        return names;
+    }
+
+    /** The same list as one line, for the log. */
+    private static String describe(List<ToolRound> rounds) {
+        return String.join(", ", toolNames(rounds));
     }
 
     private ChatRequest buildRequest(List<Message> messages, AgentConfig config) {

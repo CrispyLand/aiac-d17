@@ -65,7 +65,32 @@ class JsonFileConversationStoreTest {
         List<Message> restored = store(20).history("c1");
         assertThat(restored.get(0).stats().promptTokens()).isEqualTo(10);
         assertThat(restored.get(1).stats()).isEqualTo(
-                new MessageStats(0, 5, 15, 380, "openai/gpt-oss-20b", "stop"));
+                new MessageStats(0, 5, 15, 380, "openai/gpt-oss-20b", "stop", List.of()));
+    }
+
+    /**
+     * The badge on a restored message is only as good as this: the names are the one trace of tool
+     * use that survives the turn, so losing them on reload would leave a transcript claiming every
+     * answer was written from memory alone. Order and repeats are asserted because both are the
+     * content — two lookups are not one.
+     */
+    @Test
+    void toolsUsedSurviveTheRestartSoAnOldAnswerStillSaysWhatItLookedUp() {
+        store(20).append("c1", List.of(Message.assistant("two events, one task").withStats(
+                MessageStats.forCompletion(5, 15, 380, "openai/gpt-oss-20b", "stop")
+                        .withToolsUsed(List.of("getSchedule", "getTasks", "getSchedule")))));
+
+        assertThat(store(20).history("c1").get(0).stats().toolsUsed())
+                .containsExactly("getSchedule", "getTasks", "getSchedule");
+    }
+
+    /** A transcript written before the field existed still loads, reading as "answered alone". */
+    @Test
+    void aMessageWithNoRecordedToolsReadsAsHavingUsedNone() {
+        store(20).append("c1", List.of(Message.assistant("hi").withStats(
+                MessageStats.forCompletion(5, 15, 380, "openai/gpt-oss-20b", "stop"))));
+
+        assertThat(store(20).history("c1").get(0).stats().toolsUsed()).isEmpty();
     }
 
     @Test

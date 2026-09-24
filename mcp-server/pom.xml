@@ -32,6 +32,7 @@
 		<google-api-client.version>2.9.1</google-api-client.version>
 		<google-oauth-client.version>1.39.0</google-oauth-client.version>
 		<google-calendar.version>v3-rev20260708-2.0.0</google-calendar.version>
+		<google-tasks.version>v1-rev20251102-2.0.0</google-tasks.version>
 		<!--
 		  2.0.1 rather than 1.1.x. Spring AI 1.1.8's starters pin spring-boot-starter 3.5.15,
 		  a Boot generation below this parent; 2.0.1's pin 4.1.1 exactly. Both ship @McpTool,
@@ -67,6 +68,19 @@
 			<groupId>com.google.apis</groupId>
 			<artifactId>google-api-services-calendar</artifactId>
 			<version>${google-calendar.version}</version>
+		</dependency>
+
+		<!--
+		  Google Tasks is a separate API from Calendar, not a corner of it. The Calendar UI shows
+		  tasks beside events, which makes them look like one thing; events.list has never
+		  returned a task and never will. Separate service, separate scope, separate artifact.
+		  Its POM also hard-codes google-api-client 2.7.2, overridden by the same direct
+		  declaration below.
+		-->
+		<dependency>
+			<groupId>com.google.apis</groupId>
+			<artifactId>google-api-services-tasks</artifactId>
+			<version>${google-tasks.version}</version>
 		</dependency>
 
 		<!--

@@ -24,23 +24,30 @@ spring:
         # readable.
         type: SYNC
 
+# One Google account, one consent, two read-only APIs — so these settings sit under `google`
+# rather than under either service that uses them.
 google:
-  calendar:
-    # Both default to the repository root, one level above this server — where Google Cloud
-    # Console's download lands and where .gitignore already covers them. They are relative, so
-    # they only resolve as intended when the process starts in mcp-server/. The startup error
-    # prints the absolute path it actually looked at, because that is the only useful thing to
-    # say when a relative path misses. Set an absolute path here if your IDE runs elsewhere.
-    credentials-file: ../credentials.json
-    token-directory: ../.google-tokens
+  # Both default to the repository root, one level above this server — where Google Cloud
+  # Console's download lands and where .gitignore already covers them. They are relative, so
+  # they only resolve as intended when the process starts in mcp-server/. The startup error
+  # prints the absolute path it actually looked at, because that is the only useful thing to
+  # say when a relative path misses. Set an absolute path here if your IDE runs elsewhere.
+  credentials-file: ../credentials.json
 
-    # -1 asks for any free loopback port for the consent redirect. A desktop OAuth client is
-    # allowed to redirect to any localhost port, so pinning one only risks a collision.
-    receiver-port: -1
+  # Deleting this directory is how you force a fresh consent. The cached credential records the
+  # tokens but NOT the scopes they were granted for, so widening the scope list in GoogleAuth
+  # without clearing this leaves the old, narrower token in place and the new API fails with
+  # 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT at call time rather than at startup.
+  token-directory: ../.google-tokens
 
-    # Which zone decides where the day starts and ends. Empty = the JVM's, which is right when
-    # this runs on the machine whose schedule is being read.
-    time-zone: ""
+  # -1 asks for any free loopback port for the consent redirect. A desktop OAuth client is
+  # allowed to redirect to any localhost port, so pinning one only risks a collision.
+  receiver-port: -1
+
+  # Which zone decides where a calendar day starts and ends. Empty = the JVM's, which is right
+  # when this runs on the machine whose schedule is being read. Events only — a task's due date
+  # has no time of day to place in a zone.
+  time-zone: ""
 
 logging:
   level:

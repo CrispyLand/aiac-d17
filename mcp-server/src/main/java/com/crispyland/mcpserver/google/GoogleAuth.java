@@ -12,6 +12,8 @@ import com.google.api.client.json.gson.GsonFactory;
 import com.google.api.client.util.store.FileDataStoreFactory;
 import com.google.api.services.calendar.Calendar;
 import com.google.api.services.calendar.CalendarScopes;
+import com.google.api.services.tasks.Tasks;
+import com.google.api.services.tasks.TasksScopes;
 import java.io.IOException;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
@@ -26,19 +28,30 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Getting permission to read one Google Calendar, and nothing else.
+ * Getting permission to read one Google account, and nothing else.
  * <p>
- * This class is the whole of the OAuth story, on purpose. The tool that answers "what is on my
- * calendar" has no business knowing that a browser was opened, that a refresh token exists or
- * where it is kept; it receives an authorized {@link Calendar} and calls a method on it. Keeping
- * the seam here means the tool can be read, reviewed and reasoned about without OAuth in scope,
- * and it means the credential handling has exactly one home to audit.
+ * This class is the whole of the OAuth story, on purpose. The tools that answer "what is on my
+ * calendar" and "what is due" have no business knowing that a browser was opened, that a refresh
+ * token exists or where it is kept; they receive an authorized service object and call a method
+ * on it. Keeping the seam here means each tool can be read and reviewed without OAuth in scope,
+ * and it means credential handling has exactly one home to audit.
  * <p>
- * <strong>Read-only is enforced by the scope, not by the tool.</strong> {@link #SCOPES} asks for
- * {@code calendar.readonly} alone, so the access token this produces is one Google will refuse to
- * let write. That matters because it is a guarantee that survives a mistake: if a future tool
- * method called {@code events.insert}, the request would fail at Google rather than succeed
- * quietly. A promise made in a code comment protects nothing; a scope does.
+ * <strong>Read-only is enforced by the scopes, not by the tools.</strong> {@link #SCOPES} asks
+ * for the two {@code .readonly} scopes and nothing else, so the access token this produces is one
+ * Google will refuse to let write. That matters because it is a guarantee that survives a
+ * mistake: if a future tool method called {@code events.insert} or {@code tasks.delete}, the
+ * request would fail at Google rather than succeed quietly. A promise made in a code comment
+ * protects nothing; a scope does.
+ * <p>
+ * Both scopes are requested in a single consent, and the credential is a bean the two service
+ * objects share. Authorizing per service would mean two browser prompts and two stored tokens to
+ * keep in step, for one account and one user sitting at one machine.
+ * <p>
+ * <strong>Changing {@link #SCOPES} requires deleting the token store.</strong> The cached
+ * credential records the access and refresh tokens and their expiry — it does not record what
+ * they were granted for. So a widened scope list will not re-prompt: the old, narrower token is
+ * loaded happily and the new API's calls fail at request time with
+ * {@code 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT}, which points at the call rather than at the cause.
  * <p>
  * The credential is obtained eagerly, while the bean is created, which means a first run cannot
  * finish starting until consent is given in the browser. That is deliberate. The alternative —
@@ -47,34 +60,48 @@ import org.springframework.context.annotation.Configuration;
  * that cannot actually answer.
  */
 @Configuration
-@EnableConfigurationProperties(GoogleCalendarProperties.class)
-public class GoogleCalendarAuth {
+@EnableConfigurationProperties(GoogleProperties.class)
+public class GoogleAuth {
 
-    private static final Logger log = LoggerFactory.getLogger(GoogleCalendarAuth.class);
+    private static final Logger log = LoggerFactory.getLogger(GoogleAuth.class);
 
     /**
-     * One scope, read-only. Widening this list is the only way this server could ever modify a
-     * calendar, which makes the line worth guarding in review.
+     * Two scopes, both read-only. Widening this list is the only way this server could ever
+     * modify anything, which makes these lines worth guarding in review — and worth remembering
+     * that editing them without clearing the token store fails silently until a call is made.
      */
-    private static final List<String> SCOPES = List.of(CalendarScopes.CALENDAR_READONLY);
+    private static final List<String> SCOPES =
+            List.of(CalendarScopes.CALENDAR_READONLY, TasksScopes.TASKS_READONLY);
 
     /** Sent to Google as the caller's name; shows up on the consent screen and in audit logs. */
     private static final String APPLICATION_NAME = "crispyland-mcp-calendar";
 
     /**
      * Which user the cached credential belongs to. A constant because this server reads one
-     * person's calendar — the one sitting at the machine when consent was given.
+     * person's account — the one sitting at the machine when consent was given.
      */
     private static final String STORED_USER = "user";
 
-    private final GoogleCalendarProperties properties;
+    /**
+     * Gson, not Jackson. {@code google-api-client} 2.9.1 depends on {@code google-http-client-gson},
+     * so this keeps Jackson 2 out of a Spring Boot 4 application that is otherwise on Jackson 3.
+     */
+    private static final JsonFactory JSON = GsonFactory.getDefaultInstance();
 
-    public GoogleCalendarAuth(GoogleCalendarProperties properties) {
+    private final GoogleProperties properties;
+
+    public GoogleAuth(GoogleProperties properties) {
         this.properties = properties;
     }
 
+    /** Shared by both service objects; building one per service would only duplicate its pool. */
+    @Bean
+    public NetHttpTransport googleTransport() throws GeneralSecurityException, IOException {
+        return GoogleNetHttpTransport.newTrustedTransport();
+    }
+
     /**
-     * An authorized, read-only Calendar client.
+     * The granted credential, read-only across both APIs. One bean, so one consent.
      *
      * @throws IllegalStateException if the OAuth client file is missing, naming the absolute path
      *                               that was actually looked at — the default is relative, so
@@ -82,28 +109,23 @@ public class GoogleCalendarAuth {
      *                               printing the resolved path answers it in one line
      */
     @Bean
-    public Calendar googleCalendar() throws IOException, GeneralSecurityException {
+    public Credential googleCredential(NetHttpTransport transport) throws IOException {
         Path credentials = properties.credentialsPath();
         if (!Files.isReadable(credentials)) {
             throw new IllegalStateException(
                     "Google OAuth client file not found at " + credentials + ". Download it from "
                             + "Google Cloud Console as an OAuth client of type 'Desktop app' and "
-                            + "either put it there or set google.calendar.credentials-file.");
+                            + "either put it there or set google.credentials-file.");
         }
-
-        NetHttpTransport transport = GoogleNetHttpTransport.newTrustedTransport();
-        // Gson, not Jackson. google-api-client 2.9.1 depends on google-http-client-gson, so this
-        // keeps Jackson 2 out of a Spring Boot 4 application that is otherwise on Jackson 3.
-        JsonFactory json = GsonFactory.getDefaultInstance();
 
         GoogleClientSecrets secrets;
         try (Reader reader = Files.newBufferedReader(credentials, StandardCharsets.UTF_8)) {
-            secrets = GoogleClientSecrets.load(json, reader);
+            secrets = GoogleClientSecrets.load(JSON, reader);
         }
 
         Path tokens = properties.tokenPath();
         GoogleAuthorizationCodeFlow flow =
-                new GoogleAuthorizationCodeFlow.Builder(transport, json, secrets, SCOPES)
+                new GoogleAuthorizationCodeFlow.Builder(transport, JSON, secrets, SCOPES)
                         .setDataStoreFactory(new FileDataStoreFactory(tokens.toFile()))
                         // Without this Google issues an access token and no refresh token, and
                         // the browser prompt comes back roughly an hour later. "Offline" is what
@@ -111,8 +133,7 @@ public class GoogleCalendarAuth {
                         .setAccessType("offline")
                         .build();
 
-        boolean firstRun = flow.loadCredential(STORED_USER) == null;
-        if (firstRun) {
+        if (flow.loadCredential(STORED_USER) == null) {
             log.info("No stored Google credential in {} — opening a browser for consent. "
                     + "Requesting {} only.", tokens, SCOPES);
         }
@@ -124,8 +145,20 @@ public class GoogleCalendarAuth {
         Credential credential = new AuthorizationCodeInstalledApp(flow, receiver)
                 .authorize(STORED_USER);
 
-        log.info("Google Calendar authorized read-only; credential cached in {}.", tokens);
-        return new Calendar.Builder(transport, json, credential)
+        log.info("Google authorized read-only for {}; credential cached in {}.", SCOPES, tokens);
+        return credential;
+    }
+
+    @Bean
+    public Calendar googleCalendar(NetHttpTransport transport, Credential credential) {
+        return new Calendar.Builder(transport, JSON, credential)
+                .setApplicationName(APPLICATION_NAME)
+                .build();
+    }
+
+    @Bean
+    public Tasks googleTasks(NetHttpTransport transport, Credential credential) {
+        return new Tasks.Builder(transport, JSON, credential)
                 .setApplicationName(APPLICATION_NAME)
                 .build();
     }

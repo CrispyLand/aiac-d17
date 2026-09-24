@@ -81,6 +81,18 @@
         .mstats { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
                   text-align: right; }
         .mstats b { color: #40454d; }
+        /* Which tools the answer needed. Teal and monospace to match the MCP panel above and the
+           tool segment of the context bar — three views of the same thing, so they read alike. */
+        .used {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 10px; font-weight: 600; color: #0b7285;
+            border: 1px solid #63e6be; background: #e6fcf5;
+            border-radius: 999px; padding: 1px 7px; margin-left: 4px;
+            white-space: nowrap;
+        }
+        /* A lookup that broke still gets a badge — the answer was written around a hole, which is
+           the case where saying nothing would be most misleading. */
+        .used.broke { color: #c92a2a; border-color: #ffc9c9; background: #fff5f5; }
         .body { white-space: pre-wrap; }
         /* The compressed head of the dialogue — sits where the messages it replaced used to be. */
         .turn.summary { background: #e9fbf3; border: 1px dashed #63d3a6; }
@@ -781,6 +793,12 @@
                             <span th:text="${m.stats.model}"></span>
                             <span th:if="${!#strings.isEmpty(m.stats.finishReason)}"
                                   th:text="' · ' + ${m.stats.finishReason}"></span>
+                            <!-- One badge per call, in the order they ran, so a tool used twice
+                                 shows twice. Absent on every turn the model answered alone, which
+                                 is what makes its presence worth noticing. -->
+                            <span th:each="t : ${m.stats.toolsUsed}" class="used"
+                                  th:classappend="${#strings.endsWith(t, '(failed)')} ? 'broke'"
+                                  th:text="${t}">tool</span>
                         </span>
                     </span>
                 </div>

@@ -297,6 +297,13 @@ public class JsonFileConversationStore implements ConversationStore {
         node.put("latencyMillis", stats.latencyMillis());
         node.put("model", stats.model());
         node.put("finishReason", stats.finishReason());
+        // Omitted when empty, which is most messages — an empty array on every user message would
+        // triple the size of the file to say nothing. An array rather than a joined string because
+        // the order and the repeats are the content.
+        if (!stats.toolsUsed().isEmpty()) {
+            ArrayNode used = node.putArray("toolsUsed");
+            stats.toolsUsed().forEach(used::add);
+        }
     }
 
     private static List<Message> readMessages(JsonNode array) {
@@ -316,7 +323,8 @@ public class JsonFileConversationStore implements ConversationStore {
                 number(node.path("totalTokens")),
                 number(node.path("latencyMillis")),
                 text(node.path("model")),
-                text(node.path("finishReason")));
+                text(node.path("finishReason")),
+                strings(node.path("toolsUsed")));
     }
 
     private static String text(JsonNode node) {
@@ -325,6 +333,25 @@ public class JsonFileConversationStore implements ConversationStore {
 
     private static long number(JsonNode node) {
         return node.isNumber() ? node.longValue() : 0L;
+    }
+
+    /**
+     * Absent, null or the wrong shape all read as an empty list — which is what every message
+     * written before this field existed means, and what a message that used no tools means too.
+     * Non-text entries are skipped rather than stringified, on the same rule as {@code flag}: one
+     * field added to the format must never be able to cost the whole dialogue.
+     */
+    private static List<String> strings(JsonNode node) {
+        if (!node.isArray()) {
+            return List.of();
+        }
+        List<String> values = new ArrayList<>(node.size());
+        for (JsonNode entry : node) {
+            if (entry.isTextual()) {
+                values.add(entry.stringValue());
+            }
+        }
+        return values;
     }
 
     /**

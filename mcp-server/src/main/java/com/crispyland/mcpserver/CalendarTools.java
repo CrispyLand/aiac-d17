@@ -1,6 +1,6 @@
 package com.crispyland.mcpserver;
 
-import com.crispyland.mcpserver.google.GoogleCalendarProperties;
+import com.crispyland.mcpserver.google.GoogleProperties;
 import com.google.api.client.util.DateTime;
 import com.google.api.services.calendar.Calendar;
 import com.google.api.services.calendar.model.Event;
@@ -55,7 +55,7 @@ public class CalendarTools {
     private final Calendar calendar;
     private final ZoneId zone;
 
-    public CalendarTools(Calendar calendar, GoogleCalendarProperties properties) {
+    public CalendarTools(Calendar calendar, GoogleProperties properties) {
         this.calendar = calendar;
         this.zone = properties.timeZone().isEmpty()
                 ? ZoneId.systemDefault()
